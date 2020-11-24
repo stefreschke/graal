@@ -29,21 +29,6 @@
  */
 package com.oracle.truffle.llvm.runtime;
 
-import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.security.SecureRandom;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.stream.Collectors;
-
-import org.graalvm.collections.EconomicMap;
-
 import com.oracle.truffle.api.CallTarget;
 import com.oracle.truffle.api.CompilerAsserts;
 import com.oracle.truffle.api.CompilerDirectives;
@@ -73,11 +58,28 @@ import com.oracle.truffle.llvm.runtime.pointer.LLVMManagedPointer;
 import com.oracle.truffle.llvm.runtime.pointer.LLVMNativePointer;
 import com.oracle.truffle.llvm.runtime.pointer.LLVMPointer;
 import com.oracle.truffle.llvm.runtime.pthread.LLVMPThreadContext;
+import org.graalvm.collections.EconomicMap;
+
+import java.io.IOException;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.security.SecureRandom;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
 
 public final class LLVMContext {
 
     public static final String SULONG_INIT_CONTEXT = "__sulong_init_context";
     public static final String SULONG_DISPOSE_CONTEXT = "__sulong_dispose_context";
+
+    private static final String START_METHOD_NAME = "_start";
 
     private final List<Path> libraryPaths = new ArrayList<>();
     private final Object libraryPathsLock = new Object();
@@ -222,12 +224,22 @@ public final class LLVMContext {
         assert this.threadingStack == null;
         this.contextExtensions = contextExtens;
 
-        final String traceOption = env.getOptions().get(SulongEngineOption.TRACE_IR);
-        if (SulongEngineOption.optionEnabled(traceOption)) {
+        String opt = env.getOptions().get(SulongEngineOption.LD_DEBUG);
+        this.loaderTraceStream = SulongEngineOption.optionEnabled(opt) ? new TargetStream(env, opt) : null;
+        opt = env.getOptions().get(SulongEngineOption.DEBUG_SYSCALLS);
+        this.syscallTraceStream = SulongEngineOption.optionEnabled(opt) ? new TargetStream(env, opt) : null;
+        opt = env.getOptions().get(SulongEngineOption.NATIVE_CALL_STATS);
+        this.nativeCallStatsStream = SulongEngineOption.optionEnabled(opt) ? new TargetStream(env, opt) : null;
+        opt = env.getOptions().get(SulongEngineOption.PRINT_LIFE_TIME_ANALYSIS_STATS);
+        this.lifetimeAnalysisStream = SulongEngineOption.optionEnabled(opt) ? new TargetStream(env, opt) : null;
+        opt = env.getOptions().get(SulongEngineOption.LL_DEBUG_VERBOSE);
+        this.llDebugVerboseStream = (SulongEngineOption.optionEnabled(opt) && env.getOptions().get(SulongEngineOption.LL_DEBUG)) ? new TargetStream(env, opt) : null;
+        opt = env.getOptions().get(SulongEngineOption.TRACE_IR);
+        if (SulongEngineOption.optionEnabled(opt)) {
             if (!env.getOptions().get(SulongEngineOption.LL_DEBUG)) {
                 throw new IllegalStateException("\'--llvm.traceIR\' requires \'--llvm.llDebug=true\'");
             }
-            tracer = new LLVMTracerInstrument(env, traceOption);
+            tracer = new LLVMTracerInstrument(env, opt);
         }
 
         this.threadingStack = new LLVMThreadingStack(Thread.currentThread(), parseStackSize(env.getOptions().get(SulongEngineOption.STACK_SIZE)));
@@ -257,16 +269,30 @@ public final class LLVMContext {
                 TruffleFile file = InternalLibraryLocator.INSTANCE.locateLibrary(this, sulongLibraryNames[i], "<default bitcode library>");
                 env.parseInternal(Source.newBuilder("llvm", file).internal(isInternalLibraryFile(file)).build());
             }
-
-            /*- TODO (PLi): after the default libraries have been loaded. The start function symbol,
-             *   the sulong initialise context, and the sulong dispose context symbol could be setup
-             *   here instead of being at findAndSetSulongSpecificFunctions in LoadModulesNode.
-             */
+            setLibsulongAuxFunction(SULONG_INIT_CONTEXT);
+            setLibsulongAuxFunction(SULONG_DISPOSE_CONTEXT);
+            setLibsulongAuxFunction(START_METHOD_NAME);
             CallTarget builtinsLibrary = env.parseInternal(Source.newBuilder("llvm",
                             env.getInternalTruffleFile(internalLibraryPath.resolve(language.getCapability(PlatformCapability.class).getBuiltinsLibrary()).toUri())).internal(true).build());
             builtinsLibrary.call();
-        } catch (Exception e) {
+        } catch (IOException e) {
             throw new IllegalStateException(e);
+        }
+    }
+
+    private void setLibsulongAuxFunction(String name) {
+        LLVMScope fileScope = language.getInternalFileScopes("libsulong");
+        LLVMSymbol contextFunction = fileScope.get(name);
+        if (contextFunction != null && contextFunction.isFunction()) {
+            if (name.equals(SULONG_INIT_CONTEXT)) {
+                language.setSulongInitContext(contextFunction.asFunction());
+            } else if (name.equals(SULONG_DISPOSE_CONTEXT)) {
+                language.setSulongDisposeContext(contextFunction.asFunction());
+            } else if (name.equals(START_METHOD_NAME)) {
+                language.setStartFunctionCode(new LLVMFunctionCode(contextFunction.asFunction()));
+            }
+        } else {
+            throw new IllegalStateException("Context cannot be initialized: " + name + " was not found in sulong libraries");
         }
     }
 
@@ -431,8 +457,8 @@ public final class LLVMContext {
     public Object getFreeReadOnlyGlobalsBlockFunction() {
         if (freeGlobalsBlockFunction == null) {
             CompilerDirectives.transferToInterpreterAndInvalidate();
-            NFIContextExtension nfiContextExtension = getContextExtensionOrNull(NFIContextExtension.class);
-            freeGlobalsBlockFunction = nfiContextExtension.getNativeFunction("__sulong_free_globals_block", "(POINTER):VOID");
+            NativeContextExtension nativeContextExtension = getContextExtensionOrNull(NativeContextExtension.class);
+            freeGlobalsBlockFunction = nativeContextExtension.getNativeFunction("__sulong_free_globals_block", "(POINTER):VOID");
         }
         return freeGlobalsBlockFunction;
     }
@@ -440,8 +466,8 @@ public final class LLVMContext {
     public Object getProtectReadOnlyGlobalsBlockFunction() {
         if (protectGlobalsBlockFunction == null) {
             CompilerDirectives.transferToInterpreterAndInvalidate();
-            NFIContextExtension nfiContextExtension = getContextExtensionOrNull(NFIContextExtension.class);
-            protectGlobalsBlockFunction = nfiContextExtension.getNativeFunction("__sulong_protect_readonly_globals_block", "(POINTER):VOID");
+            NativeContextExtension nativeContextExtension = getContextExtensionOrNull(NativeContextExtension.class);
+            protectGlobalsBlockFunction = nativeContextExtension.getNativeFunction("__sulong_protect_readonly_globals_block", "(POINTER):VOID");
         }
         return protectGlobalsBlockFunction;
     }
@@ -449,8 +475,8 @@ public final class LLVMContext {
     public Object getAllocateGlobalsBlockFunction() {
         if (allocateGlobalsBlockFunction == null) {
             CompilerDirectives.transferToInterpreterAndInvalidate();
-            NFIContextExtension nfiContextExtension = getContextExtensionOrNull(NFIContextExtension.class);
-            allocateGlobalsBlockFunction = nfiContextExtension.getNativeFunction("__sulong_allocate_globals_block", "(UINT64):POINTER");
+            NativeContextExtension nativeContextExtension = getContextExtensionOrNull(NativeContextExtension.class);
+            allocateGlobalsBlockFunction = nativeContextExtension.getNativeFunction("__sulong_allocate_globals_block", "(UINT64):POINTER");
         }
         return allocateGlobalsBlockFunction;
     }
@@ -882,94 +908,32 @@ public final class LLVMContext {
     }
 
     @CompilationFinal private TargetStream loaderTraceStream;
-    @CompilationFinal private boolean loaderTraceStreamInitialized = false;
 
     public TargetStream loaderTraceStream() {
-        if (!loaderTraceStreamInitialized) {
-            CompilerDirectives.transferToInterpreterAndInvalidate();
-
-            final String opt = env.getOptions().get(SulongEngineOption.LD_DEBUG);
-            if (SulongEngineOption.optionEnabled(opt)) {
-                loaderTraceStream = new TargetStream(env, opt);
-            }
-
-            loaderTraceStreamInitialized = true;
-        }
         return loaderTraceStream;
     }
 
     @CompilationFinal private TargetStream syscallTraceStream;
-    @CompilationFinal private boolean syscallTraceStreamInitialized = false;
 
     public TargetStream syscallTraceStream() {
-        if (!syscallTraceStreamInitialized) {
-            CompilerDirectives.transferToInterpreterAndInvalidate();
-
-            final String opt = env.getOptions().get(SulongEngineOption.DEBUG_SYSCALLS);
-            if (SulongEngineOption.optionEnabled(opt)) {
-                syscallTraceStream = new TargetStream(env, opt);
-            }
-
-            syscallTraceStreamInitialized = true;
-        }
-
         return syscallTraceStream;
     }
 
     @CompilationFinal private TargetStream nativeCallStatsStream;
-    @CompilationFinal private boolean nativeCallStatsStreamInitialized = false;
 
     public TargetStream nativeCallStatsStream() {
-        if (!nativeCallStatsStreamInitialized) {
-            CompilerDirectives.transferToInterpreterAndInvalidate();
-
-            final String opt = env.getOptions().get(SulongEngineOption.NATIVE_CALL_STATS);
-            if (SulongEngineOption.optionEnabled(opt)) {
-                nativeCallStatsStream = new TargetStream(env, opt);
-            }
-
-            nativeCallStatsStreamInitialized = true;
-        }
-
         return nativeCallStatsStream;
     }
 
     @CompilationFinal private TargetStream lifetimeAnalysisStream;
-    @CompilationFinal private boolean lifetimeAnalysisStreamInitialized = false;
 
     public TargetStream lifetimeAnalysisStream() {
-        if (!lifetimeAnalysisStreamInitialized) {
-            CompilerDirectives.transferToInterpreterAndInvalidate();
-
-            final String opt = env.getOptions().get(SulongEngineOption.PRINT_LIFE_TIME_ANALYSIS_STATS);
-            if (SulongEngineOption.optionEnabled(opt)) {
-                lifetimeAnalysisStream = new TargetStream(env, opt);
-            }
-
-            lifetimeAnalysisStreamInitialized = true;
-        }
-
         return lifetimeAnalysisStream;
     }
 
     @CompilationFinal private TargetStream llDebugVerboseStream;
-    @CompilationFinal private boolean llDebugVerboseStreamInitialized = false;
 
     public TargetStream llDebugVerboseStream() {
-        if (!llDebugVerboseStreamInitialized) {
-            CompilerDirectives.transferToInterpreterAndInvalidate();
-
-            final String opt = env.getOptions().get(SulongEngineOption.LL_DEBUG_VERBOSE);
-            if (SulongEngineOption.optionEnabled(opt)) {
-                if (!env.getOptions().get(SulongEngineOption.LL_DEBUG)) {
-                    throw new IllegalStateException("\'--llvm.llDebug.verbose\' requires \'--llvm.llDebug=true\'");
-                }
-                llDebugVerboseStream = new TargetStream(env, opt);
-            }
-
-            llDebugVerboseStreamInitialized = true;
-        }
-
         return llDebugVerboseStream;
     }
 

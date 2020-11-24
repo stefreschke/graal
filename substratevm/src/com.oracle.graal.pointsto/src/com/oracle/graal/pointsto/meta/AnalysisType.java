@@ -706,7 +706,9 @@ public class AnalysisType implements WrappedJavaType, OriginalClassProvider, Com
     }
 
     public boolean isInstantiated() {
-        return isInHeap || isAllocated;
+        boolean instantiated = isInHeap || isAllocated;
+        assert !instantiated || isReachable;
+        return instantiated;
     }
 
     /**
@@ -1036,8 +1038,8 @@ public class AnalysisType implements WrappedJavaType, OriginalClassProvider, Com
         ResolvedJavaType wrappedEnclosingType;
         try {
             wrappedEnclosingType = wrapped.getEnclosingType();
-        } catch (NoClassDefFoundError e) {
-            /* Ignore NoClassDefFoundError thrown by enclosing type resolution. */
+        } catch (LinkageError e) {
+            /* Ignore LinkageError thrown by enclosing type resolution. */
             return null;
         }
         return universe.lookup(wrappedEnclosingType);

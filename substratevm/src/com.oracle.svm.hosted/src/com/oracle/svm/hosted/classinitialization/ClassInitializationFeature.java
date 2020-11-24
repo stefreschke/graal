@@ -226,7 +226,7 @@ public class ClassInitializationFeature implements GraalFeature {
         classInitializationSupport.checkDelayedInitialization();
 
         for (AnalysisType type : access.getUniverse().getTypes()) {
-            if (type.isReachable() || type.isInstantiated()) {
+            if (type.isReachable()) {
                 DynamicHub hub = access.getHostVM().dynamicHub(type);
                 if (hub.getClassInitializationInfo() == null) {
                     buildClassInitializationInfo(access, type, hub);
@@ -360,7 +360,7 @@ public class ClassInitializationFeature implements GraalFeature {
 
         } catch (VerifyError e) {
             /* Synthesize a VerifyError to be thrown at run time. */
-            AnalysisMethod throwVerifyError = access.getMetaAccess().lookupJavaMethod(ExceptionSynthesizer.throwVerifyErrorMethod);
+            AnalysisMethod throwVerifyError = access.getMetaAccess().lookupJavaMethod(ExceptionSynthesizer.throwExceptionMethod(VerifyError.class));
             access.registerAsCompiled(throwVerifyError);
             return new ClassInitializationInfo(MethodPointer.factory(throwVerifyError));
         } catch (Throwable t) {

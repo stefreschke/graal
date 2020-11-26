@@ -15,6 +15,10 @@ import { installRubyGem, RUBY_LANGUAGE_SERVER_GEM_NAME } from './graalVMRuby';
 import { addNativeImageToPOM } from './graalVMNativeImage';
 import { getGVMHome, setupProxy } from './graalVMConfiguration';
 import { runVisualVMForPID } from './graalVMVisualVM';
+import {
+	PolyglotNotebookContentProvider,
+	PolyglotNotebookKernelProvider
+} from './polyglotNotebooks';
 
 const INSTALL_GRAALVM: string = 'Install GraalVM';
 const SELECT_EXISTING_GRAALVM: string = 'Select Existing GraalVM';
@@ -101,6 +105,13 @@ export function activate(context: vscode.ExtensionContext) {
 			stopLanguageServer().then(() => startLanguageServer(getGVMHome()));
 		}
 	}));
+	// Enable Polyglot Notebooks
+	context.subscriptions.push(vscode.notebook.registerNotebookContentProvider(
+			"my-notebook-provider", new PolyglotNotebookContentProvider()
+		),
+		vscode.notebook.registerNotebookKernelProvider({ viewType: 'my-notebook-provider' }, new PolyglotNotebookKernelProvider())
+	);
+
 	const graalVMHome = getGVMHome();
 	if (!graalVMHome) {
 		setupGraalVM();

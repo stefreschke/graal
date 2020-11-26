@@ -2,7 +2,7 @@
 	"name": "graalvm",
 	"displayName": "GraalVM",
 	"description": "Support for GraalVM",
-	"version": "0.5.0",
+	"version": "0.5.0-SNAPSHOT",
 	"preview": true,
 	"license": "SEE LICENSE IN LICENSE.txt",
 	"publisher": "oracle-labs-graalvm",
@@ -28,10 +28,21 @@
 		"Other"
 	],
 	"activationEvents": [
-		"*"
+		"onNotebook:my-notebook-provider"
 	],
 	"main": "./dist/extension",
 	"contributes": {
+		"notebookProvider": [
+			{
+				"viewType": "my-notebook-provider",
+				"displayName": "My Notebook Provider",
+				"selector": [
+					{
+						"filenamePattern": "*.notebook"
+					}
+				]
+			}
+		],
 		"configuration": {
 			"type": "object",
 			"title": "GraalVM",
@@ -630,16 +641,17 @@
 		"vscode-languageclient": "^5.2.1"
 	},
 	"devDependencies": {
+		"@types/decompress": "^4.2.3",
 		"@types/mocha": "^7.0.2",
+		"@types/mustache": "^4.0.1",
 		"@types/node": "^12.12.30",
 		"@types/sax": "^1.2.1",
-		"@types/mustache": "^4.0.1",
-		"@types/decompress": "^4.2.3",
 		"@types/vscode": "^1.49.0",
 		"ts-loader": "^6.2.1",
 		"tslint": "^6.1.0",
 		"typescript": "^3.8.3",
 		"webpack": "^4.42.0",
 		"webpack-cli": "^3.3.11"
-	}
+	},
+	"enableProposedApi": true
 }

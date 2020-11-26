@@ -59,10 +59,44 @@ export class PolyglotNotebookKernel implements vscode.NotebookKernel {
     cancelCellExecution(): void {
     }
 
-    executeAllCells(): void {
+    async executeAllCells(document: vscode.NotebookDocument): Promise<void> {
+        for (const cell of document.cells) {
+            await this.executeCell(document, cell);
+        }
     }
 
-    executeCell(): void {
+    async executeCell(_document: vscode.NotebookDocument,
+                      cell: vscode.NotebookCell): Promise<void> {
+        try {
+            const start = +new Date();
+            cell.metadata.runState = vscode.NotebookCellRunState.Running;
+            cell.metadata.runStartTime = start;
+            // actually do run a notebook
+
+            // handy dandy does...
+            // cell.outputs = [];
+            // const logger = (s: string) => {
+            //     cell.outputs = [...cell.outputs, { outputKind: vscode.CellOutputKind.Text, text: s }];
+            // };
+            // const token: CancellationToken = { onCancellationRequested: undefined };
+            // this.cancellations.set(cell, token);
+            // await this.executor(cell.document.getText(), cell, document, logger, token);
+
+            cell.metadata.runState = vscode.NotebookCellRunState.Success;
+            cell.metadata.lastRunDuration = +new Date() - start;
+
+        } catch (e) {
+            cell.outputs = [...cell.outputs,
+                {
+                    outputKind: vscode.CellOutputKind.Error,
+                    ename: e.name,
+                    evalue: e.message,
+                    traceback: [e.stack],
+                },
+            ];
+            cell.metadata.runState = vscode.NotebookCellRunState.Error;
+            cell.metadata.lastRunDuration = undefined;
+        }
     }
 
 }
